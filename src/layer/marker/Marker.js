@@ -139,4 +139,5 @@ L.Marker = L.Class.extend({
 		this.fire(e.type);
 		L.DomEvent.stopPropagation(e);
 	}
+	
 });
