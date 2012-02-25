@@ -186,12 +186,20 @@ L.TileLayer = L.Class.extend({
 			tileBounds = null,
 			center = bounds.getCenter();
 
+		if (this.options.bounds) {      
+			var pixelBounds = new L.Bounds(
+				this._map.project(this.options.bounds.getNorthWest()),
+				this._map.project(this.options.bounds.getSouthEast()));
+			tileBounds = this._tileBounds(pixelBounds);
+		}
 
 		var j, i;
 		for (j = bounds.min.y; j <= bounds.max.y; j++) {
 			for (i = bounds.min.x; i <= bounds.max.x; i++) {
-				if (!((i + ':' + j) in this._tiles)) {
-					queue.push(new L.Point(i, j));
+				var point = new L.Point(i, j);
+				if ((tileBounds == null || tileBounds.contains(point)) &&
+					!((i + ':' + j) in this._tiles)) {
+					queue.push(point);
 				}
 			}
 		}
