@@ -963,8 +963,8 @@ L.Map = L.Class.extend({
 		doubleClickZoom: true,
 		boxZoom: true,
 
-		inertia: true,
-		inertiaDecceleration: L.Browser.touch ? 3000 : 2000, // px/s^2
+		inertia: !L.Browser.android,
+		inertiaDeceleration: L.Browser.touch ? 3000 : 2000, // px/s^2
 		inertiaMaxSpeed:      L.Browser.touch ? 1500 : 1000, // px/s
 		inertiaThreshold:      L.Browser.touch ? 32   : 16, // ms
 
@@ -1682,7 +1682,7 @@ L.TileLayer = L.Class.extend({
 		zoomReverse: false,
 
 		unloadInvisibleTiles: L.Browser.mobile,
-		updateWhenIdle: true,
+		updateWhenIdle: L.Browser.mobile,
 		reuseTiles: false
 	},
 
@@ -4742,12 +4742,14 @@ L.Map.Drag = L.Handler.extend({
 	_onDragEnd: function () {
 		var map = this._map,
 			options = map.options,
-			delay = +new Date() - this._lastTime;
+			delay = +new Date() - this._lastTime,
+			
+			noInertia = !options.inertia ||
+					delay > options.inertiaThreshold ||
+					typeof this._positions[0] === 'undefined';
 
-		if (!options.inertia || delay > options.inertiaTreshold) {
-			map
-				.fire('moveend')
-				.fire('dragend');
+		if (noInertia) {
+			map.fire('moveend');
 
 		} else {
 
@@ -4760,23 +4762,24 @@ L.Map.Drag = L.Handler.extend({
 				limitedSpeed = Math.min(options.inertiaMaxSpeed, speed),
 				limitedSpeedVector = speedVector.multiplyBy(limitedSpeed / speed),
 
-				deccelerationDuration = limitedSpeed / options.inertiaDecceleration,
-				offset = limitedSpeedVector.multiplyBy(-deccelerationDuration / 2).round();
+				decelerationDuration = limitedSpeed / options.inertiaDeceleration,
+				offset = limitedSpeedVector.multiplyBy(-decelerationDuration / 2).round();
 
 			var panOptions = {
-				duration: deccelerationDuration,
+				duration: decelerationDuration,
 				easing: 'ease-out'
 			};
 
 			L.Util.requestAnimFrame(L.Util.bind(function () {
 				this._map.panBy(offset, panOptions);
 			}, this));
+		}
 
+		map.fire('dragend');
 
-			if (options.maxBounds) {
-				// TODO predrag validation instead of animation
-				L.Util.requestAnimFrame(this._panInsideMaxBounds, map, true, map._container);
-			}
+		if (options.maxBounds) {
+			// TODO predrag validation instead of animation
+			L.Util.requestAnimFrame(this._panInsideMaxBounds, map, true, map._container);
 		}
 	},
 
@@ -4924,8 +4927,8 @@ L.Map.TouchZoom = L.Handler.extend({
 
 		if (!e.touches || e.touches.length !== 2 || map._animatingZoom || this._zooming) { return; }
 
-		var p1 = map.mouseEventToContainerPoint(e.touches[0]),
-			p2 = map.mouseEventToContainerPoint(e.touches[1]),
+		var p1 = map.mouseEventToLayerPoint(e.touches[0]),
+			p2 = map.mouseEventToLayerPoint(e.touches[1]),
 			viewCenter = map.containerPointToLayerPoint(map.getSize().divideBy(2));
 
 		this._startCenter = p1.add(p2).divideBy(2, true);
@@ -4948,8 +4951,8 @@ L.Map.TouchZoom = L.Handler.extend({
 
 		var map = this._map;
 
-		var p1 = map.mouseEventToContainerPoint(e.touches[0]),
-			p2 = map.mouseEventToContainerPoint(e.touches[1]);
+		var p1 = map.mouseEventToLayerPoint(e.touches[0]),
+			p2 = map.mouseEventToLayerPoint(e.touches[1]);
 
 		this._scale = p1.distanceTo(p2) / this._startDist;
 		this._delta = p1.add(p2).divideBy(2, true).subtract(this._startCenter);
@@ -5503,6 +5506,103 @@ L.Control.Attribution = L.Control.extend({
 });
 
 
+L.Control.Scale = L.Control.extend({
+	options: {
+		position: 'bottomleft',
+		maxWidth: 100,
+		metric: true,
+		imperial: true,
+		updateWhenIdle: false
+	},
+
+	onAdd: function (map) {
+		this._map = map;
+
+		var className = 'leaflet-control-scale',
+		    container = L.DomUtil.create('div', className),
+		    options = this.options;
+
+		if (options.metric) {
+			this._mScale = L.DomUtil.create('div', className + '-line', container);
+		}
+		if (options.imperial) {
+			this._iScale = L.DomUtil.create('div', className + '-line', container);
+		}
+
+		map.on(options.updateWhenIdle ? 'moveend' : 'move', this._update, this);
+		this._update();
+
+		return container;
+	},
+
+	onRemove: function (map) {
+		map.off(this.options.updateWhenIdle ? 'moveend' : 'move', this._update, this);
+	},
+
+	_update: function () {
+		var bounds = this._map.getBounds(),
+		    centerLat = bounds.getCenter().lat,
+
+		    left = new L.LatLng(centerLat, bounds.getSouthWest().lng),
+		    right = new L.LatLng(centerLat, bounds.getNorthEast().lng),
+
+		    size = this._map.getSize(),
+		    options = this.options,
+
+		    maxMeters = left.distanceTo(right) * (options.maxWidth / size.x);
+
+		if (options.metric) {
+			this._updateMetric(maxMeters);
+		}
+
+		if (options.imperial) {
+			this._updateImperial(maxMeters);
+		}
+	},
+
+	_updateMetric: function (maxMeters) {
+		var meters = this._getRoundNum(maxMeters);
+
+		this._mScale.style.width = this._getScaleWidth(meters / maxMeters) + 'px';
+		this._mScale.innerHTML = meters < 1000 ? meters + ' m' : (meters / 1000) + ' km';
+	},
+
+	_updateImperial: function (maxMeters) {
+		var maxFeet = maxMeters * 3.2808399,
+			scale = this._iScale,
+			maxMiles, miles, feet;
+
+		if (maxFeet > 5280) {
+			maxMiles = maxFeet / 5280;
+			miles = this._getRoundNum(maxMiles);
+
+			scale.style.width = this._getScaleWidth(miles / maxMiles) + 'px';
+			scale.innerHTML = miles + ' mi';
+
+		} else {
+			feet = this._getRoundNum(maxFeet);
+
+			scale.style.width = this._getScaleWidth(feet / maxFeet) + 'px';
+			scale.innerHTML = feet + ' ft';
+		}
+	},
+
+	_getScaleWidth: function (ratio) {
+		return Math.round(this.options.maxWidth * ratio) - 10;
+	},
+
+	_getRoundNum: function (num) {
+		var pow10 = Math.pow(10, (Math.floor(num) + '').length - 1),
+		    d = num / pow10;
+
+		return pow10 * (d >= 10 ?
+			10 :
+			d >= 5 ?
+				5 :
+				d >= 2 ? 2 : 1);
+	}
+});
+
 
 L.Control.Layers = L.Control.extend({
 	options: {
@@ -5805,8 +5905,8 @@ L.Transition = L.Transition.extend({
 			this._el.style[L.Transition.PROPERTY] = 'none';
 
 			this.fire('step');
-			
-			if (e instanceof window.Event) {
+
+			if (e && e.type) {
 				this.fire('end');
 			}
 		}
@@ -5978,7 +6078,7 @@ L.Map.include(!(L.Transition && L.Transition.implemented()) ? {} : {
 		if (!this._panTransition) {
 			this._panTransition = new L.Transition(this._mapPane);
 
-			//this._panTransition.on('step', this._onPanTransitionStep, this);
+			this._panTransition.on('step', this._onPanTransitionStep, this);
 			this._panTransition.on('end', this._onPanTransitionEnd, this);
 		}
 

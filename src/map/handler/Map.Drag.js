@@ -89,12 +89,14 @@ L.Map.Drag = L.Handler.extend({
 	_onDragEnd: function () {
 		var map = this._map,
 			options = map.options,
-			delay = +new Date() - this._lastTime;
+			delay = +new Date() - this._lastTime,
+			
+			noInertia = !options.inertia ||
+					delay > options.inertiaThreshold ||
+					typeof this._positions[0] === 'undefined';
 
-		if (!options.inertia || delay > options.inertiaTreshold) {
-			map
-				.fire('moveend')
-				.fire('dragend');
+		if (noInertia) {
+			map.fire('moveend');
 
 		} else {
 
@@ -107,23 +109,24 @@ L.Map.Drag = L.Handler.extend({
 				limitedSpeed = Math.min(options.inertiaMaxSpeed, speed),
 				limitedSpeedVector = speedVector.multiplyBy(limitedSpeed / speed),
 
-				deccelerationDuration = limitedSpeed / options.inertiaDecceleration,
-				offset = limitedSpeedVector.multiplyBy(-deccelerationDuration / 2).round();
+				decelerationDuration = limitedSpeed / options.inertiaDeceleration,
+				offset = limitedSpeedVector.multiplyBy(-decelerationDuration / 2).round();
 
 			var panOptions = {
-				duration: deccelerationDuration,
+				duration: decelerationDuration,
 				easing: 'ease-out'
 			};
 
 			L.Util.requestAnimFrame(L.Util.bind(function () {
 				this._map.panBy(offset, panOptions);
 			}, this));
+		}
 
+		map.fire('dragend');
 
-			if (options.maxBounds) {
-				// TODO predrag validation instead of animation
-				L.Util.requestAnimFrame(this._panInsideMaxBounds, map, true, map._container);
-			}
+		if (options.maxBounds) {
+			// TODO predrag validation instead of animation
+			L.Util.requestAnimFrame(this._panInsideMaxBounds, map, true, map._container);
 		}
 	},
 
